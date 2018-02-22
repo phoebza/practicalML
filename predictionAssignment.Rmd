@@ -1,0 +1,143 @@
+---
+title: "Practical Machine Learning"
+author: "Phoebe"
+date: "22 February 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+The goal of the project is to predict the manner in which people did the exercise. This is the "classe" variable in the training set. The report will be describing how the model is built, how cross validation is used, what the expected out of sample error is, and why the choices are been suggested.
+
+## Data Preparation
+The data has already been downloaded from the given links in the assignment and saved to a working directory. Load the caret package, and read in the training and testing data:
+
+```{r}
+setwd("~/R/Coursera/submissions/PracticalMachineLearning/")
+library(caret)
+
+# load RAW data to R variables
+ptrain <- read.csv(file = "pml-training.csv", header = T, sep = ",")
+ptest <- read.csv(file = "pml-testing.csv", header = T, sep = ",")
+```
+
+Since I’ll be predicting classes in the testing dataset, I’ll split the training data into training and testing partitions and use the pml-testing.csv as a validation sample. I’ll use cross validation within the training partition to improve the model fit and then do an out-of-sample test with the testing partition.
+Because I want to be able to estimate the out-of-sample error, I randomly split the full training data (ptrain) into a smaller training set (`ptrain_dat`) and a validation set (`ptrain_val`):
+
+```{r}
+set.seed(10)
+inTrain_index <- createDataPartition(y=ptrain$classe, p=0.7, list=F)
+ptrain_val <- ptrain[-inTrain_index, ]
+ptrain_dat <- ptrain[inTrain_index, ]
+```
+
+We'll be removing variables with nearly zero variance and almost NA values. 
+Note that we decided to omit variables that don't make sense for prediction.
+```{r}
+# remove variables with nearly zero variance
+nzv <- nearZeroVar(ptrain_dat)
+ptrain_dat <- ptrain_dat[, -nzv]
+ptrain_val <- ptrain_val[, -nzv]
+
+# remove variables that are almost always NA
+withNA <- sapply(ptrain_dat, function(x) mean(is.na(x))) > 0.95
+ptrain_dat <- ptrain_dat[, withNA==F]
+ptrain_val <- ptrain_val[, withNA==F]
+
+# remove variables that don't make intuitive sense for prediction (X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp), which happen to be the first five variables
+ptrain_dat <- ptrain_dat[, -(1:5)]
+ptrain_val <- ptrain_val[, -(1:5)]
+```
+
+## Building Model
+
+We are setting up test harness to use 3-fold cross validation for each selected model:
+```{r}
+# instruct train to use 3-fold CV to select optimal tuning parameters
+fitControl <- trainControl(method="cv", number=3) #, verboseIter=F)
+#metric <- "Accuracy"
+```
+
+We trying to evaluate non-linear methods; therefore we need to determine which model would be good for this problem or what configurations to use. Let's evaluate from the different algorithms below:
+
+* Classfification and Regression Trees (CART)
+* k-Nearest Neightbours (kNN)
+* Random Forest (RF)
+
+We building the three models below:
+```{r}
+# a) nonlinear algorithms:
+# * CART
+set.seed(7)
+fit.cart <- train(classe ~., data=ptrain_dat, method="rpart", trControl=fitControl)
+# * kNN
+set.seed(7)
+fit.knn <- train(classe ~., data=ptrain_dat, method="knn", trControl=fitControl)
+# b) advanced algorithms
+# * SVM
+#set.seed(7)
+#fit.svm <- train(classe ~., data=ptrain_dat, method="svmRadial", trControl=fitControl)
+# * Random Forest
+set.seed(7)
+fit.rf <- train(classe ~., data=ptrain_dat, method="rf", trControl=fitControl, ntree=100)
+
+```
+
+
+## Make Predictions
+We use the model to predict classe in validation set (ptrain_val); and show confustion matrix to get estimates of out-of-sample error:
+
+```{r}
+predCart <- predict(fit.cart, ptrain_val)
+cmCart <- confusionMatrix(predCart, ptrain_val$classe)
+
+predKnn <- predict(fit.knn, ptrain_val)
+cmKnn <- confusionMatrix(predKnn, ptrain_val$classe)
+
+predRf <- predict(fit.rf, ptrain_val)
+cmRf <- confusionMatrix(predRf, ptrain_val$classe)
+
+
+AccuracyResults <- data.frame(
+      Model = c('CART', 'kNN', 'RF'),
+      Accuracy = rbind(cmCart$overall[1], cmKnn$overall[1], cmRf$overall[1])
+)
+print(AccuracyResults)
+
+print(cmRf)
+```
+The random forest fit is clearly more accurate than the k-nearest neighbors method with 99% accuracy.
+
+
+## Feature Selection and Importance
+Some features may be highly correlated. The PCA method mixes the final features into components that are difficult to interpret; instead, we drop features with high correlation (>90%).
+
+```{r}
+outcome <- which(names(ptrain_dat) == "classe")
+highCorrColms <- findCorrelation(abs(cor(ptrain_dat[,-outcome])),0.90)
+highCorrFeatures <- names(ptrain_dat)[highCorrColms]
+ptrain_dat <- ptrain_dat[,-highCorrColms]
+outcome <- which(names(ptrain_dat) == "classe")
+```
+
+The random forest method reduces overfitting and is good for nonlinear features. First, to see if the data is nonlinear, we use the random forest to discover the most important features. The feature plot for the 4 most important features is shown.
+
+```{r}
+feaRF = randomForest::randomForest(ptrain_dat[,-outcome], ptrain_dat[,outcome], importance = T)
+rfImp = data.frame(feaRF$importance)
+impFeatures = order(-rfImp$MeanDecreaseGini)
+features <- names(ptest[,colSums(is.na(ptest)) == 0])[8:59]
+Imp <- createDataPartition(ptrain[,c(features,"classe")]$classe, p = 0.05, list = F)
+featurePlot(ptrain_dat[Imp, impFeatures[1:4]],ptrain_dat$classe[Imp], plot = "pairs")
+```
+
+## ML Algorithm applied on 20 test cases
+```{r}
+predictTEST <- predict(fit.rf, newdata=ptest)
+predictTEST
+```
+
